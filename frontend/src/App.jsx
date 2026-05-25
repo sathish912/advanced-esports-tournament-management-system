@@ -28,6 +28,7 @@ function AppContent() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/tournaments" element={<Tournaments />} />
+          <Route path="/esportstv" element={<EsportsTV />} />
           <Route path="/esports-tv" element={<EsportsTV />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route
@@ -64,8 +65,23 @@ function App() {
         const data = JSON.parse(event.data);
         if (data.type === 'NEW_TOURNAMENT') {
           toast.success(data.message, { icon: '🏆', duration: 5000 });
-        } else if (data.type === 'MATCH_RESULT') {
-          toast(data.message, { icon: '⚔️', duration: 4000 });
+        } else if (data.type === 'SUPER_CHAT') {
+          toast.success(
+            <div className="flex flex-col">
+              <span className="font-bold text-yellow-400 text-sm">SUPERCHAT • ₹{data.amount}</span>
+              <span className="font-semibold text-white">{data.user}: {data.content}</span>
+            </div>, 
+            { 
+              icon: '⭐', 
+              duration: 8000,
+              style: {
+                background: '#1a1a1a',
+                border: '1px solid #eab308',
+                color: '#fff',
+                boxShadow: '0 0 15px rgba(234, 179, 8, 0.3)'
+              }
+            }
+          );
         }
       } catch (err) {
         console.error("WS parse error", err);

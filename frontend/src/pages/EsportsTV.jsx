@@ -8,19 +8,41 @@ import { toast } from 'react-hot-toast';
 export default function EsportsTV() {
   const [tournaments, setTournaments] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [chatMessages, setChatMessages] = useState([]);
+  const [chatMessages, setChatMessages] = useState(() => {
+    const saved = sessionStorage.getItem('esports_chat');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [chatInput, setChatInput] = useState('');
   const [ws, setWs] = useState(null);
   const { user } = useAuth();
   const chatEndRef = useRef(null);
 
+  // Superchat Modal State
+  const [showSuperchatModal, setShowSuperchatModal] = useState(false);
+  const [superchatAmount, setSuperchatAmount] = useState('');
+  const [superchatMessage, setSuperchatMessage] = useState('');
+  const predefinedAmounts = [50, 100, 200, 500, 1000];
+
   useEffect(() => {
+    sessionStorage.setItem('esports_chat', JSON.stringify(chatMessages));
+  }, [chatMessages]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('session_id');
+    
     fetchTournaments();
 
     // Initialize WebSocket for Chat
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//localhost:8000/ws`;
     const socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
+      if (sessionId) {
+        verifySuperchatPayment(sessionId);
+      }
+    };
 
     socket.onmessage = (event) => {
       try {
@@ -40,6 +62,16 @@ export default function EsportsTV() {
 
     return () => socket.close();
   }, []);
+
+  const verifySuperchatPayment = async (sessionId) => {
+    try {
+      await api.get(`/verify-superchat-payment?session_id=${sessionId}`);
+      toast.success("Paid Superchat successfully sent!");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Superchat verification failed");
+    }
+  };
 
   const fetchTournaments = async () => {
     try {
@@ -69,6 +101,25 @@ export default function EsportsTV() {
     
     ws.send(JSON.stringify(msg));
     setChatInput('');
+  };
+
+  const handleSuperchatSubmit = async (e) => {
+    e.preventDefault();
+    if (!superchatMessage.trim() || !superchatAmount || isNaN(superchatAmount) || Number(superchatAmount) < 50) {
+      toast.error("Please enter a message and an amount of at least ₹50.");
+      return;
+    }
+    try {
+      const res = await api.post('/superchat/checkout', {
+        amount: Number(superchatAmount),
+        message: superchatMessage
+      });
+      if (res.data.checkout_url) {
+        window.location.href = res.data.checkout_url;
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Checkout failed");
+    }
   };
 
   const getEmbedUrl = (url) => {
@@ -217,7 +268,7 @@ export default function EsportsTV() {
                     </span>
                     {msg.type === 'SUPER_CHAT' && (
                       <span className="text-xs font-bold text-black bg-yellow-400 px-1.5 py-0.5 rounded flex items-center gap-1">
-                        <Sparkles size={10} /> SUPER
+                        <Sparkles size={10} /> SUPER {msg.amount ? `₹${msg.amount}` : ''}
                       </span>
                     )}
                     <span className="text-[10px] text-textMuted ml-auto">
@@ -252,11 +303,11 @@ export default function EsportsTV() {
               </div>
               <button 
                 type="button"
-                onClick={(e) => sendMessage(e, true)}
-                disabled={!chatInput.trim() || !user}
+                onClick={() => setShowSuperchatModal(true)}
+                disabled={!user}
                 className="w-full py-2 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
               >
-                <Sparkles size={14} /> Send Free Super Chat
+                <Sparkles size={14} /> Send Paid Super Chat
               </button>
             </form>
             {!user && (
@@ -266,6 +317,83 @@ export default function EsportsTV() {
         </div>
 
       </div>
+
+      {/* Superchat Modal */}
+      {showSuperchatModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-surface border border-yellow-500/30 rounded-2xl p-6 w-full max-w-md shadow-2xl shadow-yellow-500/10"
+          >
+            <div className="flex items-center gap-3 mb-6 border-b border-white/10 pb-4">
+              <Sparkles className="text-yellow-500" size={24} />
+              <h2 className="text-xl font-bold text-white uppercase tracking-wider">Send Paid Superchat</h2>
+            </div>
+            
+            <form onSubmit={handleSuperchatSubmit} className="space-y-6">
+              <div>
+                <label className="block text-xs font-bold text-textMuted uppercase tracking-wider mb-2">Select Amount (INR ₹)</label>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {predefinedAmounts.map(amt => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => setSuperchatAmount(amt.toString())}
+                      className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors ${
+                        superchatAmount === amt.toString() 
+                          ? 'bg-yellow-500 text-black' 
+                          : 'bg-background text-yellow-500 border border-yellow-500/30 hover:bg-yellow-500/10'
+                      }`}
+                    >
+                      ₹{amt}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted font-bold">₹</span>
+                  <input
+                    type="number"
+                    min="50"
+                    value={superchatAmount}
+                    onChange={(e) => setSuperchatAmount(e.target.value)}
+                    placeholder="Custom amount (Min ₹50)..."
+                    className="input-field pl-8 w-full"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-textMuted uppercase tracking-wider mb-2">Your Message</label>
+                <textarea
+                  value={superchatMessage}
+                  onChange={(e) => setSuperchatMessage(e.target.value)}
+                  placeholder="Type your highlighted message..."
+                  className="input-field w-full h-24 resize-none"
+                  required
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setShowSuperchatModal(false)}
+                  className="flex-1 py-3 bg-background hover:bg-white/5 text-white rounded-xl font-bold uppercase tracking-wider transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 py-3 bg-yellow-500 hover:bg-yellow-400 text-black rounded-xl font-bold uppercase tracking-wider transition-colors shadow-[0_0_15px_rgba(234,179,8,0.3)]"
+                >
+                  Checkout
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

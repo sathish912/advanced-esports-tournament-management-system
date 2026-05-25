@@ -44,6 +44,22 @@ export default function Tournaments() {
     }
 
     fetchData();
+
+    // Real-time synchronization
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//localhost:8000/ws`;
+    const socket = new WebSocket(wsUrl);
+    
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'REFRESH_TOURNAMENTS' || data.type === 'REFRESH_REGISTRATIONS') {
+          fetchData();
+        }
+      } catch (err) {}
+    };
+
+    return () => socket.close();
   }, [user, location.search, navigate]);
 
   const fetchData = async () => {
@@ -225,9 +241,9 @@ export default function Tournaments() {
                         e.stopPropagation();
                         handleRegister(t.id);
                       }}
-                      disabled={isRegistered || (t.status !== 'Upcoming' && t.status !== 'Registration Open')}
+                      disabled={(isRegistered && regStatus !== 'Pending Payment') || (t.status !== 'Upcoming' && t.status !== 'Registration Open')}
                       className={`w-full py-3 rounded-lg font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        isRegistered 
+                        (isRegistered && regStatus !== 'Pending Payment') 
                           ? (regStatus === 'Approved' ? 'bg-green-500/20 text-green-500 border border-green-500/50 cursor-not-allowed' :
                              regStatus === 'Rejected' ? 'bg-red-500/20 text-red-500 border border-red-500/50 cursor-not-allowed' :
                              'bg-yellow-500/20 text-yellow-500 border border-yellow-500/50 cursor-not-allowed')
@@ -236,7 +252,7 @@ export default function Tournaments() {
                           : 'btn-primary'
                       }`}
                     >
-                      {isRegistered ? (
+                      {(isRegistered && regStatus !== 'Pending Payment') ? (
                         regStatus === 'Approved' ? <><CheckCircle size={18} /> Joined</> :
                         regStatus === 'Rejected' ? <><X size={18} /> Rejected</> :
                         <><Clock size={18} /> Pending Approval</>
@@ -370,9 +386,9 @@ export default function Tournaments() {
                         e.stopPropagation();
                         handleRegister(selectedTournament.id);
                       }}
-                      disabled={modalIsReg || (selectedTournament.status !== 'Upcoming' && selectedTournament.status !== 'Registration Open')}
+                      disabled={(modalIsReg && modalStatus !== 'Pending Payment') || (selectedTournament.status !== 'Upcoming' && selectedTournament.status !== 'Registration Open')}
                       className={`py-3 px-8 rounded-lg font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        modalIsReg
+                        (modalIsReg && modalStatus !== 'Pending Payment')
                           ? (modalStatus === 'Approved' ? 'bg-green-500/20 text-green-500 border border-green-500/50 cursor-not-allowed' :
                              modalStatus === 'Rejected' ? 'bg-red-500/20 text-red-500 border border-red-500/50 cursor-not-allowed' :
                              'bg-yellow-500/20 text-yellow-500 border border-yellow-500/50 cursor-not-allowed')
@@ -381,7 +397,7 @@ export default function Tournaments() {
                           : 'btn-primary shadow-[0_0_15px_rgba(0,255,63,0.3)] hover:shadow-[0_0_25px_rgba(0,255,63,0.5)]'
                       }`}
                     >
-                      {modalIsReg ? (
+                      {(modalIsReg && modalStatus !== 'Pending Payment') ? (
                         modalStatus === 'Approved' ? <><CheckCircle size={18} /> Joined</> :
                         modalStatus === 'Rejected' ? <><X size={18} /> Rejected</> :
                         <><Clock size={18} /> Pending Approval</>

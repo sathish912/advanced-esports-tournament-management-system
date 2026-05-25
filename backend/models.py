@@ -114,3 +114,16 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
+
+class Superchat(Base):
+    __tablename__ = "superchats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    message = Column(String(500))
+    amount = Column(Float)
+    currency = Column(String(10), default="INR")
+    session_id = Column(String(255), unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])

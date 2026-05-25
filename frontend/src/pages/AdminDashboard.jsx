@@ -27,6 +27,18 @@ export default function AdminDashboard() {
     stream_url: ''
   });
 
+  // Instant Match State
+  const [showInstantMatch, setShowInstantMatch] = useState(false);
+  const [instantMatch, setInstantMatch] = useState({
+    game: 'BGMI',
+    player1_id: '',
+    player2_id: '',
+    prize_pool: 0,
+    banner: 'http://localhost:8000/static/banners/mrgamer.png',
+    stream_url: ''
+  });
+  const [allPlayers, setAllPlayers] = useState([]);
+
   // Registrations State
   const [registrations, setRegistrations] = useState([]);
 
@@ -62,6 +74,27 @@ export default function AdminDashboard() {
     fetchTournaments();
     fetchRegistrations();
     fetchAnalytics();
+    fetchPlayers();
+
+    // Global real-time syncing
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//localhost:8000/ws`;
+    const socket = new WebSocket(wsUrl);
+    
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'REFRESH_TOURNAMENTS') {
+          fetchTournaments();
+          fetchAnalytics();
+        } else if (data.type === 'REFRESH_REGISTRATIONS') {
+          fetchRegistrations();
+          fetchAnalytics();
+        }
+      } catch (err) {}
+    };
+
+    return () => socket.close();
   }, []);
 
   const fetchTournaments = async () => {
@@ -107,6 +140,15 @@ export default function AdminDashboard() {
     }
   };
 
+  const fetchPlayers = async () => {
+    try {
+      const res = await api.get('/admin/users');
+      setAllPlayers(res.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'security') {
       fetchSecurityData();
@@ -133,6 +175,10 @@ export default function AdminDashboard() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    if (newTourney.entry_fee > 0 && newTourney.entry_fee < 50) {
+      alert("Paid tournaments must have a minimum entry fee of ₹50 to meet Stripe requirements.");
+      return;
+    }
     try {
       await api.post('/tournaments', newTourney);
       setShowCreate(false);
@@ -140,6 +186,26 @@ export default function AdminDashboard() {
       fetchAnalytics();
     } catch (err) {
       alert(err.response?.data?.detail || 'Tournament creation failed');
+    }
+  };
+
+  const handleInstantMatchSubmit = async (e) => {
+    e.preventDefault();
+    if (instantMatch.player1_id === instantMatch.player2_id) {
+      alert("Please select two different players.");
+      return;
+    }
+    try {
+      await api.post('/admin/instant-match', {
+        ...instantMatch,
+        player1_id: Number(instantMatch.player1_id),
+        player2_id: Number(instantMatch.player2_id)
+      });
+      setShowInstantMatch(false);
+      alert("Instant match successfully initiated!");
+      fetchTournaments();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to create instant match');
     }
   };
 
@@ -156,6 +222,10 @@ export default function AdminDashboard() {
 
   const handleEditSubmit = async (e) => {
     e.preventDefault();
+    if (editingTourney.entry_fee > 0 && editingTourney.entry_fee < 50) {
+      alert("Paid tournaments must have a minimum entry fee of ₹50 to meet Stripe requirements.");
+      return;
+    }
     try {
       const { id, ...payload } = editingTourney;
       await api.patch(`/tournaments/${id}`, payload);
@@ -224,8 +294,13 @@ export default function AdminDashboard() {
   };
 
   const handlePublishScore = async () => {
-    if (scoringScores.player1_score === scoringScores.player2_score && scoringMatch.player2_id) {
-      alert("Knockout matches cannot end in a draw. Declare a clear winner.");
+    const p1Score = Number(scoringScores.player1_score);
+    const p2Score = Number(scoringScores.player2_score);
+    const p1Kills = Number(scoringScores.player1_kills);
+    const p2Kills = Number(scoringScores.player2_kills);
+
+    if (p1Score === p2Score && p1Kills === p2Kills && scoringMatch.player2_id) {
+      alert("Knockout matches cannot end in a draw. Declare a clear winner via Scores or Kills.");
       return;
     }
     try {
@@ -319,13 +394,84 @@ export default function AdminDashboard() {
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h3 className="text-xl font-bold text-white uppercase tracking-wider">Tournament Database</h3>
-              <button 
-                onClick={() => setShowCreate(!showCreate)} 
-                className="btn-primary flex items-center gap-2 text-sm py-2 px-4"
-              >
-                <Plus size={16} /> Create Battleground
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setShowInstantMatch(!showInstantMatch)} 
+                  className="btn-secondary flex items-center gap-2 text-sm py-2 px-4"
+                >
+                  <Sparkles size={16} /> Instant Match
+                </button>
+                <button 
+                  onClick={() => setShowCreate(!showCreate)} 
+                  className="btn-primary flex items-center gap-2 text-sm py-2 px-4"
+                >
+                  <Plus size={16} /> Create Battleground
+                </button>
+              </div>
             </div>
+
+            <AnimatePresence>
+              {showInstantMatch && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="glass-panel p-6 rounded-2xl border border-white/10 mb-6 bg-surface/30">
+                    <h4 className="text-lg font-bold text-primary mb-4 flex items-center gap-2">
+                      <Sparkles size={20} /> Initialize Instant 1v1 Match
+                    </h4>
+                    <form onSubmit={handleInstantMatchSubmit} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Game</label>
+                        <select className="input-field" value={instantMatch.game} onChange={e => setInstantMatch({...instantMatch, game: e.target.value})}>
+                          <option value="BGMI">BGMI</option>
+                          <option value="Valorant">Valorant</option>
+                          <option value="CS2">CS2</option>
+                          <option value="Free Fire">Free Fire</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Player 1</label>
+                        <select className="input-field" required value={instantMatch.player1_id} onChange={e => setInstantMatch({...instantMatch, player1_id: e.target.value})}>
+                          <option value="" disabled>Select Player 1</option>
+                          {allPlayers.map(p => <option key={p.id} value={p.id}>{p.name} ({p.email})</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Player 2</label>
+                        <select className="input-field" required value={instantMatch.player2_id} onChange={e => setInstantMatch({...instantMatch, player2_id: e.target.value})}>
+                          <option value="" disabled>Select Player 2</option>
+                          {allPlayers.map(p => <option key={p.id} value={p.id}>{p.name} ({p.email})</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Prize Pool (₹)</label>
+                        <input type="number" className="input-field" value={instantMatch.prize_pool} onChange={e => setInstantMatch({...instantMatch, prize_pool: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Select Banner</label>
+                        <select className="input-field" value={instantMatch.banner} onChange={e => setInstantMatch({...instantMatch, banner: e.target.value})}>
+                          {bannerOptions.map(opt => (
+                            <option key={opt.url} value={opt.url}>{opt.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="lg:col-span-2">
+                        <label className="block text-xs font-bold text-textMuted uppercase mb-1">Live TV Link (YouTube ID / URL)</label>
+                        <input type="text" className="input-field" placeholder="e.g. dQw4w9WgXcQ" value={instantMatch.stream_url} onChange={e => setInstantMatch({...instantMatch, stream_url: e.target.value})} />
+                      </div>
+                      <div className="lg:col-span-4 flex justify-end mt-2">
+                        <button type="submit" className="btn-primary py-2 px-6 shadow-[0_0_15px_rgba(0,255,63,0.3)] hover:shadow-[0_0_25px_rgba(0,255,63,0.5)]">
+                          Create & Deploy Match
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Create form */}
             <AnimatePresence>
@@ -766,13 +912,17 @@ export default function AdminDashboard() {
                                   </div>
                                 </div>
 
-                                {m.match_status !== 'Completed' && (
+                                {m.match_status !== 'Completed' ? (
                                   <button
                                     onClick={() => handleOpenScoring(m)}
                                     className="w-full mt-4 py-2 bg-primary/20 text-primary hover:bg-primary/30 border border-primary/40 rounded-xl text-xs font-bold uppercase transition-all tracking-wider cursor-pointer"
                                   >
                                     Declare Scores
                                   </button>
+                                ) : (
+                                  <div className="mt-4 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center gap-2 text-yellow-400 text-xs font-bold uppercase tracking-wider">
+                                    <Trophy size={14} /> Winner: {m.winner_id === m.player1_id ? (m.player1?.name || 'Player 1') : (m.player2?.name || 'Player 2')}
+                                  </div>
                                 )}
                               </div>
                             );
@@ -973,7 +1123,7 @@ export default function AdminDashboard() {
                       <input 
                         type="number" 
                         className="input-field py-1.5 px-3 text-sm font-semibold"
-                        value={scoringScores.player1_score === 0 ? '' : scoringScores.player1_score}
+                        value={scoringScores.player1_score}
                         onChange={(e) => setScoringScores({...scoringScores, player1_score: e.target.value})}
                       />
                     </div>
@@ -982,7 +1132,7 @@ export default function AdminDashboard() {
                       <input 
                         type="number" 
                         className="input-field py-1.5 px-3 text-sm font-semibold"
-                        value={scoringScores.player1_kills === 0 ? '' : scoringScores.player1_kills}
+                        value={scoringScores.player1_kills}
                         onChange={(e) => setScoringScores({...scoringScores, player1_kills: e.target.value})}
                       />
                     </div>
@@ -999,7 +1149,7 @@ export default function AdminDashboard() {
                         <input 
                           type="number" 
                           className="input-field py-1.5 px-3 text-sm font-semibold"
-                          value={scoringScores.player2_score === 0 ? '' : scoringScores.player2_score}
+                          value={scoringScores.player2_score}
                           onChange={(e) => setScoringScores({...scoringScores, player2_score: e.target.value})}
                         />
                       </div>
@@ -1008,7 +1158,7 @@ export default function AdminDashboard() {
                         <input 
                           type="number" 
                           className="input-field py-1.5 px-3 text-sm font-semibold"
-                          value={scoringScores.player2_kills === 0 ? '' : scoringScores.player2_kills}
+                          value={scoringScores.player2_kills}
                           onChange={(e) => setScoringScores({...scoringScores, player2_kills: e.target.value})}
                         />
                       </div>

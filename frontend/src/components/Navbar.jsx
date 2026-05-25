@@ -43,8 +43,11 @@ export default function Navbar() {
                   <span>Dashboard</span>
                 </Link>
                 <div className="flex items-center space-x-4 pl-4 border-l border-white/10">
-                  <span className="text-sm font-medium text-primary uppercase">{user.role}</span>
-                  <button onClick={handleLogout} className="flex items-center space-x-1 text-gray-400 hover:text-primary transition-colors">
+                  <span className="text-sm font-bold text-primary uppercase tracking-wider">{user.name}</span>
+                  {user.role === 'admin' && (
+                    <span className="text-[10px] bg-red-500/20 text-red-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest border border-red-500/30">Admin</span>
+                  )}
+                  <button onClick={handleLogout} className="flex items-center space-x-1 text-gray-400 hover:text-red-400 transition-colors ml-2">
                     <LogOut className="h-4 w-4" />
                     <span>Exit</span>
                   </button>

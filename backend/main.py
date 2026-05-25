@@ -21,8 +21,9 @@ import json
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "YOUR_STRIPE_SECRET_KEY")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # Global Notification Helper
 async def send_notification(db: Session, user_id: int, title: str, message: str):
@@ -138,6 +139,8 @@ def create_tournament(
     db.add(db_tournament)
     db.commit()
     db.refresh(db_tournament)
+    import asyncio
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_TOURNAMENTS"}))
     return db_tournament
 
 @app.patch("/tournaments/{tournament_id}", response_model=schemas.Tournament)
@@ -157,6 +160,8 @@ def update_tournament(
         
     db.commit()
     db.refresh(db_tournament)
+    import asyncio
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_TOURNAMENTS"}))
     return db_tournament
 
 @app.delete("/tournaments/{tournament_id}")
@@ -169,8 +174,15 @@ def delete_tournament(
     if not db_tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
+    # Delete related dependencies first to prevent Foreign Key constraint violations
+    db.query(models.Leaderboard).filter(models.Leaderboard.tournament_id == tournament_id).delete()
+    db.query(models.Match).filter(models.Match.tournament_id == tournament_id).delete()
+    db.query(models.Registration).filter(models.Registration.tournament_id == tournament_id).delete()
+    
     db.delete(db_tournament)
     db.commit()
+    import asyncio
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_TOURNAMENTS"}))
     return {"detail": "Tournament deleted"}
 
 # Registration Endpoints
@@ -197,24 +209,27 @@ async def register_for_tournament(
         models.Registration.tournament_id == reg_data.tournament_id
     ).first()
     if existing:
-        if existing.registration_status == "Pending" and tournament.entry_fee > 0:
-            session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price_data': {
-                        'currency': 'inr',
-                        'product_data': {
-                            'name': f"Entry Fee: {tournament.name}",
+        if existing.registration_status == "Pending Payment" and tournament.entry_fee > 0:
+            try:
+                session = stripe.checkout.Session.create(
+                    payment_method_types=['card'],
+                    line_items=[{
+                        'price_data': {
+                            'currency': 'inr',
+                            'product_data': {
+                                'name': f"Entry Fee: {tournament.name}",
+                            },
+                            'unit_amount': int(tournament.entry_fee * 100), # amount in paise
                         },
-                        'unit_amount': int(tournament.entry_fee * 100), # amount in paise
-                    },
-                    'quantity': 1,
-                }],
-                mode='payment',
-                client_reference_id=str(existing.id),
-                success_url=f"http://localhost:5173/tournaments?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url="http://localhost:5173/tournaments",
-            )
+                        'quantity': 1,
+                    }],
+                    mode='payment',
+                    client_reference_id=str(existing.id),
+                    success_url=f"http://localhost:5173/tournaments?session_id={{CHECKOUT_SESSION_ID}}",
+                    cancel_url="http://localhost:5173/tournaments",
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
             return {
                 "id": existing.id,
                 "tournament_id": existing.tournament_id,
@@ -236,7 +251,7 @@ async def register_for_tournament(
     new_reg = models.Registration(
         user_id=current_user.id,
         tournament_id=reg_data.tournament_id,
-        registration_status="Pending"
+        registration_status="Pending Payment" if tournament.entry_fee > 0 else "Pending"
     )
     db.add(new_reg)
     db.commit()
@@ -245,38 +260,33 @@ async def register_for_tournament(
     checkout_url = None
     if tournament.entry_fee > 0:
         # Create Stripe Checkout Session
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'inr',
-                    'product_data': {
-                        'name': f"Entry Fee: {tournament.name}",
+        try:
+            session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': 'inr',
+                        'product_data': {
+                            'name': f"Entry Fee: {tournament.name}",
+                        },
+                        'unit_amount': int(tournament.entry_fee * 100), # amount in paise
                     },
-                    'unit_amount': int(tournament.entry_fee * 100), # amount in paise
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            client_reference_id=str(new_reg.id),
-            success_url=f"http://localhost:5173/tournaments?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url="http://localhost:5173/tournaments",
-        )
-        checkout_url = session.url
-    else:
-        new_reg.registration_status = "Approved"
-        existing_lb = db.query(models.Leaderboard).filter(
-            models.Leaderboard.player_id == new_reg.user_id,
-            models.Leaderboard.tournament_id == new_reg.tournament_id
-        ).first()
-        if not existing_lb:
-            new_lb = models.Leaderboard(
-                player_id=new_reg.user_id,
-                tournament_id=new_reg.tournament_id,
-                points=0, wins=0, kills=0, mvps=0, win_rate=0.0
+                    'quantity': 1,
+                }],
+                mode='payment',
+                client_reference_id=str(new_reg.id),
+                success_url=f"http://localhost:5173/tournaments?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url="http://localhost:5173/tournaments",
             )
-            db.add(new_lb)
-        db.commit()
+            checkout_url = session.url
+        except Exception as e:
+            # Revert the pending registration since payment failed to initiate
+            db.delete(new_reg)
+            db.commit()
+            raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
+    else:
+        import asyncio
+        asyncio.create_task(manager.broadcast({"type": "REFRESH_REGISTRATIONS"}))
 
     # We need to construct the response manually to add checkout_url
     return {
@@ -294,25 +304,13 @@ async def verify_tournament_payment(session_id: str, db: Session = Depends(datab
         if session.payment_status == "paid":
             reg_id = int(session.client_reference_id)
             db_reg = db.query(models.Registration).filter(models.Registration.id == reg_id).first()
-            if db_reg and db_reg.registration_status == "Pending":
-                db_reg.registration_status = "Approved"
-                
-                # Initialize Leaderboard
-                existing_lb = db.query(models.Leaderboard).filter(
-                    models.Leaderboard.player_id == db_reg.user_id,
-                    models.Leaderboard.tournament_id == db_reg.tournament_id
-                ).first()
-                if not existing_lb:
-                    new_lb = models.Leaderboard(
-                        player_id=db_reg.user_id,
-                        tournament_id=db_reg.tournament_id,
-                        points=0, wins=0, kills=0, mvps=0, win_rate=0.0
-                    )
-                    db.add(new_lb)
-                    
+            if db_reg and db_reg.registration_status == "Pending Payment":
+                db_reg.registration_status = "Pending"
                 db.commit()
-                return {"status": "success", "message": "Payment verified and registration approved."}
-            return {"status": "already_approved", "message": "Registration is already approved."}
+                import asyncio
+                asyncio.create_task(manager.broadcast({"type": "REFRESH_REGISTRATIONS"}))
+                return {"status": "success", "message": "Payment verified. Awaiting admin approval."}
+            return {"status": "already_approved", "message": "Registration is already processed."}
         else:
             return {"status": "unpaid", "message": "Payment not completed yet."}
     except Exception as e:
@@ -397,6 +395,10 @@ async def update_registration_status(
     title = f"Registration {new_status}!"
     message = f"Your registration request for '{db_reg.tournament.name}' has been {new_status.lower()}."
     await send_notification(db, db_reg.user_id, title, message)
+    
+    import asyncio
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_REGISTRATIONS"}))
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_TOURNAMENTS"}))
     
     return db_reg
 
@@ -662,6 +664,10 @@ async def update_match_result(
                 winner_id = db_match.player1_id
             elif db_match.player2_score > db_match.player1_score:
                 winner_id = db_match.player2_id
+            elif db_match.player1_kills > db_match.player2_kills:
+                winner_id = db_match.player1_id
+            elif db_match.player2_kills > db_match.player1_kills:
+                winner_id = db_match.player2_id
             else:
                 raise HTTPException(status_code=400, detail="Cannot tie in knockout. Please declare winner_id explicitly.")
             db_match.winner_id = winner_id
@@ -804,6 +810,17 @@ async def update_match_result(
         for idx, lb in enumerate(all_lbs):
             lb.rank = idx + 1
             
+        # Auto-complete the tournament if this was the final match
+        tournament = db.query(models.Tournament).filter(models.Tournament.id == db_match.tournament_id).first()
+        if tournament:
+            total_matches = db.query(models.Match).filter(models.Match.tournament_id == db_match.tournament_id).count()
+            completed_matches = db.query(models.Match).filter(models.Match.tournament_id == db_match.tournament_id, models.Match.match_status == "Completed").count()
+            matches_in_current_round = db.query(models.Match).filter(models.Match.tournament_id == db_match.tournament_id, models.Match.round == db_match.round).count()
+            
+            # If all matches are completed and this round only had 1 match, it's the final round.
+            if total_matches == completed_matches and matches_in_current_round == 1:
+                tournament.status = "Completed"
+                
     db.commit()
     db.refresh(db_match)
     
@@ -814,6 +831,9 @@ async def update_match_result(
         "tournament_id": db_match.tournament_id,
         "winner_id": db_match.winner_id
     })
+    
+    # Refresh tournaments in case status changed
+    await manager.broadcast({"type": "REFRESH_TOURNAMENTS"})
     
     return db_match
 
@@ -1038,6 +1058,147 @@ def get_disputed_matches(db: Session = Depends(database.get_db), current_user: m
 @app.get("/admin/flagged_users", response_model=List[schemas.User])
 def get_flagged_users(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_admin_user)):
     return db.query(models.User).filter(models.User.is_flagged == True).all()
+
+@app.get("/admin/users", response_model=List[schemas.User])
+def get_all_users(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_admin_user)):
+    return db.query(models.User).filter(models.User.role == "player").all()
+
+@app.post("/admin/instant-match")
+async def create_instant_match(
+    match_data: schemas.InstantMatchCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_admin_user)
+):
+    player1 = db.query(models.User).filter(models.User.id == match_data.player1_id).first()
+    player2 = db.query(models.User).filter(models.User.id == match_data.player2_id).first()
+    
+    if not player1 or not player2:
+        raise HTTPException(status_code=404, detail="One or both players not found")
+        
+    if player1.id == player2.id:
+        raise HTTPException(status_code=400, detail="Players must be different")
+
+    # 1. Create Tournament
+    tourney_name = f"Instant Match: {player1.name} vs {player2.name}"
+    db_tournament = models.Tournament(
+        name=tourney_name,
+        game=match_data.game,
+        prize_pool=match_data.prize_pool,
+        max_players=2,
+        entry_fee=0.0,
+        status="Ongoing",
+        match_type="Solo",
+        banner=match_data.banner,
+        stream_url=match_data.stream_url
+    )
+    db.add(db_tournament)
+    db.commit()
+    db.refresh(db_tournament)
+    
+    # 2. Create Registrations
+    reg1 = models.Registration(user_id=player1.id, tournament_id=db_tournament.id, registration_status="Approved")
+    reg2 = models.Registration(user_id=player2.id, tournament_id=db_tournament.id, registration_status="Approved")
+    db.add(reg1)
+    db.add(reg2)
+    
+    # Create Leaderboard entries
+    lb1 = models.Leaderboard(player_id=player1.id, tournament_id=db_tournament.id, points=0, wins=0, kills=0, mvps=0, win_rate=0.0)
+    lb2 = models.Leaderboard(player_id=player2.id, tournament_id=db_tournament.id, points=0, wins=0, kills=0, mvps=0, win_rate=0.0)
+    db.add(lb1)
+    db.add(lb2)
+
+    # 3. Create Match
+    new_match = models.Match(
+        tournament_id=db_tournament.id,
+        player1_id=player1.id,
+        player2_id=player2.id,
+        match_status="Scheduled",
+        round=1,
+        player1_score=0,
+        player2_score=0
+    )
+    db.add(new_match)
+    db.commit()
+    
+    # 4. Broadcast
+    import asyncio
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_TOURNAMENTS"}))
+    asyncio.create_task(manager.broadcast({"type": "REFRESH_REGISTRATIONS"}))
+    
+    return {"detail": "Instant match created successfully", "tournament_id": db_tournament.id}
+
+@app.post("/superchat/checkout")
+async def create_superchat_checkout(
+    sc_data: schemas.SuperchatCheckout,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'inr',
+                    'product_data': {
+                        'name': "Superchat",
+                    },
+                    'unit_amount': int(sc_data.amount * 100),
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            metadata={
+                'user_name': current_user.name,
+                'user_id': current_user.id,
+                'avatar': current_user.avatar or '',
+                'message': sc_data.message,
+                'amount': sc_data.amount,
+                'type': 'superchat'
+            },
+            success_url="http://localhost:5173/esports-tv?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url="http://localhost:5173/esports-tv",
+        )
+        return {"checkout_url": session.url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
+
+@app.get("/verify-superchat-payment")
+async def verify_superchat_payment(session_id: str, db: Session = Depends(database.get_db)):
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        if session.payment_status == "paid" and getattr(session.metadata, 'type', None) == 'superchat':
+            # Check if this session is already processed
+            existing = db.query(models.Superchat).filter(models.Superchat.session_id == session_id).first()
+            if not existing:
+                # Save to database
+                sc = models.Superchat(
+                    user_id=int(getattr(session.metadata, 'user_id', 0)),
+                    message=getattr(session.metadata, 'message', ''),
+                    amount=float(getattr(session.metadata, 'amount', 0)),
+                    currency="INR",
+                    session_id=session_id
+                )
+                db.add(sc)
+                db.commit()
+                db.refresh(sc)
+
+                # Broadcast via WebSocket
+                import asyncio
+                asyncio.create_task(manager.broadcast({
+                    "type": "SUPER_CHAT",
+                    "user": getattr(session.metadata, 'user_name', ''),
+                    "avatar": getattr(session.metadata, 'avatar', ''),
+                    "content": getattr(session.metadata, 'message', ''),
+                    "amount": float(getattr(session.metadata, 'amount', 0)),
+                    "timestamp": datetime.utcnow().isoformat()
+                }))
+            return {"detail": "Superchat processed successfully"}
+        else:
+            raise HTTPException(status_code=400, detail="Payment not completed")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

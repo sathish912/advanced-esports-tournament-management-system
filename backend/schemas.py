@@ -65,8 +65,16 @@ class Tournament(TournamentBase):
     class Config:
         from_attributes = True
 
+class InstantMatchCreate(BaseModel):
+    game: str
+    player1_id: int
+    player2_id: int
+    prize_pool: float = 0.0
+    banner: Optional[str] = None
+    stream_url: Optional[str] = None
+
 class RegistrationBase(BaseModel):
-    tournament_id: int
+    tournament_id: Optional[int] = None
 
 class RegistrationCreate(RegistrationBase):
     pass
@@ -77,6 +85,7 @@ class Registration(RegistrationBase):
     registration_status: str
     user: Optional[User] = None
     checkout_url: Optional[str] = None
+    tournament: Optional[Tournament] = None
     
     class Config:
         from_attributes = True
@@ -140,3 +149,7 @@ class Notification(NotificationBase):
 
     class Config:
         from_attributes = True
+
+class SuperchatCheckout(BaseModel):
+    amount: float
+    message: str
